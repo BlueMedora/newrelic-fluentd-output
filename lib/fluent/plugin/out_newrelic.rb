@@ -70,7 +70,7 @@ module Fluent
       end
 
       def package_record(tag, timestamp, record)
-        record[:tag] = tag
+        record['tag'] = tag
 
         packaged = {
           'timestamp' => timestamp,
