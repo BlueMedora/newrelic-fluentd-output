@@ -1,3 +1,3 @@
 module NewrelicFluentdOutput
-  VERSION = "1.1.1"
+  VERSION = "1.1.4"
 end

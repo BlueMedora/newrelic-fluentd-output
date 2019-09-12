@@ -18,7 +18,7 @@ require 'net/http'
 require 'uri'
 require 'zlib'
 require 'newrelic-fluentd-output/version'
-require 'yajl'
+require 'msgpack'
 
 module Fluent
   module Plugin
@@ -49,6 +49,11 @@ module Fluent
 
       def configure(conf)
         super
+
+        throw "Super failure"
+        log.error "wtf is going on"
+        @send_metrics = true
+
         if @api_key.nil? && @license_key.nil?
           raise Fluent::ConfigError.new("'api_key' or `license_key` parameter is required") 
         end
@@ -66,7 +71,9 @@ module Fluent
         .freeze
       end
 
-      def package_record(record, timestamp)
+      def package_record(record, timestamp, tag)
+        record[:tag] = tag
+
         packaged = {
           'timestamp' => timestamp,
           # non-intrinsic attributes get put into 'attributes'
@@ -86,38 +93,61 @@ module Fluent
           packaged['message'] = record['log']
           packaged['attributes'].delete('log')
         end
-        
+
         packaged
       end
 
+      def calculate_metrics(entries)
+        entries.group_by { |e|
+          {
+            type: e.payload['bindplane_source_type'],
+            bundle_config_id: e.payload['bindplane_source_id'],
+            tag: e.log_name
+          }
+        }.map { |k, v|
+          {
+            type: k[:type],
+            bundleConfigId: k[:bundle_config_id],
+            tag: k[:tag],
+            log_count: v.length,
+            log_bytes: request_size(v)
+          }
+        }
+      end
+
       def write(chunk)
+        throw "Super failure"
+        log.warn "Starting write"
         payload = {
           'common' => {
             'attributes' => {
               'plugin' => {
                 'type' => 'fluentd',
-                'version' => NewrelicFluentdOutput::VERSION,
+                'version' => NewrelicFluentdOutput::VERSION
               }
             }
           },
           'logs' => []
         }
-        chunk.msgpack_each do |ts, record|
-          next unless record.is_a? Hash
-          next if record.empty?
-          payload['logs'].push(package_record(record, ts))
+        unpacker = MessagePack::Unpacker.new(chunk)
+        unpacker.each do |entry|
+          next unless entry[:record].is_a? Hash
+          next if entry[:record].empty?
+
+          payload['logs'].push(package_record(record, ts, tag))
         end
         io = StringIO.new
         gzip = Zlib::GzipWriter.new(io)
         gzip << Yajl.dump([payload])
         gzip.close
-        send(io.string)
+        send_payload(io.string)
+        Thread.new { send_log_metrics(payload['logs']) } if @send_metrics
       end
-      
+
       def handle_response(response)
-        if !(200 <= response.code.to_i && response.code.to_i < 300)
-          log.error("Response was " + response.code + " " + response.body)
-        end
+        return if response.code.to_i >= 200 && response.code.to_i <= 300
+
+        log.error("Response was #{response.code} #{response.body}")
       end
 
       def send(payload)
@@ -129,6 +159,33 @@ module Fluent
         handle_response(http.request(request))
       end
 
+      def format(tag, time, record)
+        MessagePack.pack(tag: tag, time: time, record: record)
+      end
+
+      def send_log_metrics(entries)
+        log.error "Sending log metrics #{entries}"
+        begin
+          tries ||= 0
+          client = TCPSocket.open('127.0.0.1', 25_498)
+        rescue StandardError => e
+          tries += 1
+          if tries < 3
+            log.warn "Failed to open connection to Bindplane Log Agent counter API. Retrying #{tries}."
+            sleep 15
+            retry
+          end
+          raise
+        end
+
+        metrics = calculate_metrics(entries)
+        client.write(metrics.to_json)
+      rescue StandardError => e
+        log.error "Failed to send log counts to Bindplane Log Agent. Disabling count collection: #{e}"
+        @send_metrics = false
+      ensure
+        client.close unless client.nil?
+      end
     end
   end
 end
