@@ -19,6 +19,7 @@ require 'uri'
 require 'zlib'
 require 'newrelic-fluentd-output/version'
 require 'msgpack'
+require 'yajl'
 
 module Fluent
   module Plugin
@@ -49,9 +50,6 @@ module Fluent
 
       def configure(conf)
         super
-
-        throw "Super failure"
-        log.error "wtf is going on"
         @send_metrics = true
 
         if @api_key.nil? && @license_key.nil?
@@ -71,7 +69,7 @@ module Fluent
         .freeze
       end
 
-      def package_record(record, timestamp, tag)
+      def package_record(tag, timestamp, record)
         record[:tag] = tag
 
         packaged = {
@@ -100,9 +98,9 @@ module Fluent
       def calculate_metrics(entries)
         entries.group_by { |e|
           {
-            type: e.payload['bindplane_source_type'],
-            bundle_config_id: e.payload['bindplane_source_id'],
-            tag: e.log_name
+            type: e['attributes']['bindplane_source_type'],
+            bundle_config_id: e['attributes']['bindplane_source_id'],
+            tag: e['attributes']['tag']
           }
         }.map { |k, v|
           {
@@ -110,14 +108,12 @@ module Fluent
             bundleConfigId: k[:bundle_config_id],
             tag: k[:tag],
             log_count: v.length,
-            log_bytes: request_size(v)
+            log_bytes: Yajl.dump(v).bytesize
           }
         }
       end
 
       def write(chunk)
-        throw "Super failure"
-        log.warn "Starting write"
         payload = {
           'common' => {
             'attributes' => {
@@ -129,12 +125,18 @@ module Fluent
           },
           'logs' => []
         }
-        unpacker = MessagePack::Unpacker.new(chunk)
+        
+        unpacker = MessagePack::Unpacker.new
+        unpacker.feed(chunk.read)
         unpacker.each do |entry|
-          next unless entry[:record].is_a? Hash
-          next if entry[:record].empty?
+          tag = entry['tag']
+          time = entry['time']
+          record = entry['record']
 
-          payload['logs'].push(package_record(record, ts, tag))
+          next unless entry['record'].is_a? Hash
+          next if entry['record'].empty?
+
+          payload['logs'].push(package_record(tag, time, record))
         end
         io = StringIO.new
         gzip = Zlib::GzipWriter.new(io)
@@ -150,7 +152,7 @@ module Fluent
         log.error("Response was #{response.code} #{response.body}")
       end
 
-      def send(payload)
+      def send_payload(payload)
         http = Net::HTTP.new(@end_point.host, 443)
         http.use_ssl = true
         http.verify_mode = OpenSSL::SSL::VERIFY_PEER
@@ -164,7 +166,6 @@ module Fluent
       end
 
       def send_log_metrics(entries)
-        log.error "Sending log metrics #{entries}"
         begin
           tries ||= 0
           client = TCPSocket.open('127.0.0.1', 25_498)
