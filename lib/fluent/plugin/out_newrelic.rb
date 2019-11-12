@@ -32,6 +32,7 @@ module Fluent
       config_param :api_key, :string, :default => nil
       config_param :base_uri, :string, :default => "https://log-api.newrelic.com/log/v1"
       config_param :license_key, :string, :default => nil
+      config_param :suppress_metrics_warnings, :bool, :default => false
 
       DEFAULT_BUFFER_TYPE = 'memory'.freeze
 
@@ -50,7 +51,6 @@ module Fluent
 
       def configure(conf)
         super
-        @send_metrics = true
 
         if @api_key.nil? && @license_key.nil?
           raise Fluent::ConfigError.new("'api_key' or `license_key` parameter is required") 
@@ -143,7 +143,7 @@ module Fluent
         gzip << Yajl.dump([payload])
         gzip.close
         send_payload(io.string)
-        Thread.new { send_log_metrics(payload['logs']) } if @send_metrics
+        Thread.new { send_log_metrics(payload['logs']) } 
       end
 
       def handle_response(response)
@@ -172,7 +172,7 @@ module Fluent
         rescue StandardError => e
           tries += 1
           if tries < 3
-            log.warn "Failed to open connection to Bindplane Log Agent counter API. Retrying #{tries}."
+            log.warn "Failed to open connection to Bindplane Log Agent counter API. Retrying #{tries}." unless @suppress_metrics_warnings
             sleep 15
             retry
           end
@@ -182,8 +182,7 @@ module Fluent
         metrics = calculate_metrics(entries)
         client.write(metrics.to_json)
       rescue StandardError => e
-        log.error "Failed to send log counts to Bindplane Log Agent. Disabling count collection: #{e}"
-        @send_metrics = false
+        log.error "Failed to send log counts to Bindplane Log Agent. Skipping sending this metrics request" unless @suppress_metrics_warnings
       ensure
         client.close unless client.nil?
       end
