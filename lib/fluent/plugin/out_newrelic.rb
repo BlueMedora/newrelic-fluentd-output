@@ -32,7 +32,7 @@ module Fluent
       config_param :api_key, :string, :default => nil
       config_param :base_uri, :string, :default => "https://log-api.newrelic.com/log/v1"
       config_param :license_key, :string, :default => nil
-      config_param :suppress_metrics_warnings, :bool, :default => false
+      config_param :suppress_metrics_warnings, :bool, :default => true
 
       DEFAULT_BUFFER_TYPE = 'memory'.freeze
 
