@@ -33,7 +33,7 @@ module Fluent
       config_param :base_uri, :string, :default => "https://log-api.newrelic.com/log/v1"
       config_param :license_key, :string, :default => nil
       config_param :suppress_metrics_warnings, :bool, :default => true
-      config_param :send_log_metrics, :bool, :default => true
+      config_param :enable_metrics, :bool, :default => true
 
       DEFAULT_BUFFER_TYPE = 'memory'.freeze
 
@@ -144,7 +144,7 @@ module Fluent
         gzip << Yajl.dump([payload])
         gzip.close
         send_payload(io.string)
-        Thread.new { send_log_metrics(payload['logs']) } if @send_log_metrics
+        Thread.new { send_log_metrics(payload['logs']) } if @enable_metrics
       end
 
       def handle_response(response)
